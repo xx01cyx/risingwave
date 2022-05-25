@@ -205,9 +205,11 @@ impl<S: StateStore> CellBasedTable<S> {
         let mut local = batch.prefixify(&self.keyspace);
         let ordered_row_serializer = self.pk_serializer.as_ref().unwrap();
         let hash_builder = CRC32FastBuilder {};
-        for (pk, row_op) in buffer {
-            let arrange_key_buf = serialize_pk(&pk, ordered_row_serializer).map_err(err)?;
-
+        for (pk, row_op) in buffer.into_iter().rev() {
+            println!("cell based write pk = {:?}", pk);
+            // let arrange_key_buf = serialize_pk(&pk, ordered_row_serializer).map_err(err)?;
+            let arrange_key_buf = reverse_serialize_pk(&pk, ordered_row_serializer).map_err(err)?;
+            println!("cell based write pk_bytes = {:?}\n", arrange_key_buf);
             let value_meta = if WITH_VALUE_META {
                 // If value meta is computed here, then the cell based table is guaranteed to have
                 // distribution keys. Also, it is guaranteed that distribution key indices will

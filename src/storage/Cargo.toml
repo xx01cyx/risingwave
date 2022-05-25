@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1"
 async-stream = "0.3"
 async-trait = "0.1"
+async-recursion = "1.0"
 aws-config = { version = "0.11", default-features = false, features = ["rt-tokio", "native-tls"] }
 aws-endpoint = { version = "0.11", default-features = false }
 aws-sdk-s3 = { version = "0.11", default-features = false, features = ["rt-tokio", "native-tls"] }

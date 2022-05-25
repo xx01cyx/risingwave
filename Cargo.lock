@@ -4060,6 +4060,7 @@ name = "risingwave_storage"
 version = "0.1.7"
 dependencies = [
  "anyhow",
+ "async-recursion",
  "async-stream",
  "async-trait",
  "aws-config",

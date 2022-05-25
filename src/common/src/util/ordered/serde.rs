@@ -114,7 +114,7 @@ impl OrderedRowSerializer {
 #[derive(Clone)]
 pub struct OrderedRowDeserializer {
     data_types: Vec<DataType>,
-    order_types: Vec<OrderType>,
+    pub order_types: Vec<OrderType>,
 }
 
 impl OrderedRowDeserializer {
@@ -216,6 +216,13 @@ pub fn serialize_pk_and_row_state(
 pub fn serialize_pk(pk: &Row, serializer: &OrderedRowSerializer) -> Result<Vec<u8>> {
     let mut result = vec![];
     serializer.serialize(pk, &mut result);
+    Ok(result)
+}
+
+pub fn reverse_serialize_pk(pk: &Row, serializer: &OrderedRowSerializer) -> Result<Vec<u8>> {
+    let mut result = vec![];
+    serializer.serialize(pk, &mut result);
+    result.iter_mut().for_each(|byte| *byte = !*byte);
     Ok(result)
 }
 

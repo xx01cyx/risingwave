@@ -371,7 +371,7 @@ impl<S: StateStore> TopNExecutorBase for InnerTopNExecutor<S> {
                     {
                         // The current element in in the range of `[offset+limit, +inf)`
                         self.managed_highest_state
-                            .delete(&ordered_pk_row, epoch)
+                            .delete(&ordered_pk_row, row, epoch)
                             .await
                             .map_err(StreamExecutorError::top_n_state_error)?;
                     } else if self.managed_lowest_state.total_count() == self.offset
@@ -405,7 +405,7 @@ impl<S: StateStore> TopNExecutorBase for InnerTopNExecutor<S> {
                     } else {
                         // The current element in in the range of `[0, offset)`
                         self.managed_lowest_state
-                            .delete(&ordered_pk_row, epoch)
+                            .delete(&ordered_pk_row, row, epoch)
                             .await
                             .map_err(StreamExecutorError::top_n_state_error)?;
                         // We need to bring one, if any, from middle to lowest.

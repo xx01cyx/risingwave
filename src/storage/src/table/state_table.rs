@@ -11,15 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::cmp::Ordering;
+use std::{cmp::Ordering, iter::Rev};
 use std::collections::btree_map;
 use std::iter::Peekable;
 use std::sync::Arc;
 
+use async_recursion::async_recursion;
 use risingwave_common::array::Row;
 use risingwave_common::catalog::ColumnDesc;
 use risingwave_common::error::RwError;
-use risingwave_common::util::ordered::{serialize_pk, OrderedRowSerializer};
+use risingwave_common::util::ordered::{serialize_pk,reverse_serialize_pk, OrderedRowSerializer};
 use risingwave_common::util::sort_util::OrderType;
 
 use super::cell_based_table::{CellBasedTable, CellBasedTableStreamingIter};
@@ -38,10 +39,10 @@ pub struct StateTable<S: StateStore> {
     order_types: Vec<OrderType>,
 
     /// buffer key/values
-    mem_table: MemTable,
+    pub mem_table: MemTable,
 
     /// Relation layer
-    cell_based_table: CellBasedTable<S>,
+    pub cell_based_table: CellBasedTable<S>,
 }
 impl<S: StateStore> StateTable<S> {
     pub fn new(
@@ -115,21 +116,25 @@ impl<S: StateStore> StateTable<S> {
 
     pub async fn iter(&self, epoch: u64) -> StorageResult<StateTableRowIter<'_, S>> {
         let mem_table_iter = self.mem_table.buffer.iter().peekable();
+        let mem_table_rev_iter = self.mem_table.buffer.iter().rev().peekable();
         StateTableRowIter::new(
             &self.keyspace,
             self.column_descs.clone(),
             mem_table_iter,
+            mem_table_rev_iter,
             &self.order_types,
             epoch,
         )
         .await
     }
+    
 }
 
 /// `StateTableRowIter` is able to read the just written data (uncommited data).
 /// It will merge the result of `mem_table_iter` and `cell_based_streaming_iter`
 pub struct StateTableRowIter<'a, S: StateStore> {
     mem_table_iter: Peekable<MemTableIter<'a>>,
+    mem_table_rev_iter: Peekable<MemTableRevIter<'a>>,
     cell_based_streaming_iter: CellBasedTableStreamingIter<S>,
 
     /// The result of the last cell_based_streaming_iter next is saved, which can avoid being
@@ -137,6 +142,7 @@ pub struct StateTableRowIter<'a, S: StateStore> {
     cell_based_item: Option<(Vec<u8>, Row)>,
     pk_serializer: OrderedRowSerializer,
 }
+type MemTableRevIter<'a> = Rev<btree_map::Iter<'a, Row, RowOp>>;
 type MemTableIter<'a> = btree_map::Iter<'a, Row, RowOp>;
 
 enum NextOutcome {
@@ -150,6 +156,7 @@ impl<'a, S: StateStore> StateTableRowIter<'a, S> {
         keyspace: &Keyspace<S>,
         table_descs: Vec<ColumnDesc>,
         mem_table_iter: Peekable<MemTableIter<'a>>,
+        mem_table_rev_iter: Peekable<MemTableRevIter<'a>>,
         order_types_vec: &[OrderType],
         epoch: u64,
     ) -> StorageResult<StateTableRowIter<'a, S>> {
@@ -159,6 +166,7 @@ impl<'a, S: StateStore> StateTableRowIter<'a, S> {
         let cell_based_item = cell_based_streaming_iter.next().await.map_err(err)?;
         let state_table_iter = Self {
             mem_table_iter,
+            mem_table_rev_iter,
             cell_based_streaming_iter,
             cell_based_item,
             pk_serializer,
@@ -171,7 +179,7 @@ impl<'a, S: StateStore> StateTableRowIter<'a, S> {
         let next_flag;
         let mut res = None;
         let cell_based_item = self.cell_based_item.take();
-        match (cell_based_item, self.mem_table_iter.peek()) {
+        match (cell_based_item, self.mem_table_rev_iter.peek()) {
             (None, None) => {
                 next_flag = NextOutcome::Neither;
                 res = None;
@@ -206,7 +214,9 @@ impl<'a, S: StateStore> StateTableRowIter<'a, S> {
                             RowOp::Insert(row) => {
                                 res = Some(row.clone());
                             }
-                            RowOp::Delete(_) => {}
+                            RowOp::Delete(_) => {
+                                println!("走到这里");
+                            }
                             RowOp::Update((old_row, new_row)) => {
                                 debug_assert!(old_row == &cell_based_row);
                                 res = Some(new_row.clone());
@@ -239,12 +249,109 @@ impl<'a, S: StateStore> StateTableRowIter<'a, S> {
                 self.cell_based_item = self.cell_based_streaming_iter.next().await.map_err(err)?;
             }
             NextOutcome::Both => {
-                self.mem_table_iter.next();
+                self.mem_table_rev_iter.next();
                 self.cell_based_item = self.cell_based_streaming_iter.next().await.map_err(err)?
             }
             NextOutcome::Neither => {}
         }
 
+        Ok(res)
+    }
+
+    #[async_recursion]
+    pub async fn next_with_pk(&mut self) -> StorageResult<Option<(Vec<u8>, Row)>> {
+        println!("一次next\n\n");
+        let next_flag;
+        let mut res = None;
+        let cell_based_item = self.cell_based_item.take();
+        let mut next_again = false;
+        match (cell_based_item, self.mem_table_iter.peek()) {
+            (None, None) => {
+                next_flag = NextOutcome::Neither;
+                res = None;
+            }
+            (Some((pk, row)), None) => {
+                res = Some((pk, row));
+                next_flag = NextOutcome::Storage;
+            }
+            (None, Some((pk, row_op))) => {
+                next_flag = NextOutcome::MemTable;
+                let mem_table_pk_bytes = reverse_serialize_pk(pk, &self.pk_serializer).map_err(err)?;
+                match row_op {
+                    RowOp::Insert(row) => res = Some((mem_table_pk_bytes, row.clone())),
+                    RowOp::Delete(_) => {}
+                    RowOp::Update((_, new_row)) => res = Some((mem_table_pk_bytes, new_row.clone())),
+                }
+            }
+            (Some((cell_based_pk, cell_based_row)), Some((mem_table_pk, mem_table_row_op))) => {
+                let mem_table_pk_bytes =
+                reverse_serialize_pk(mem_table_pk, &self.pk_serializer).map_err(err)?;
+                println!("cell_based_pk = {:?}",cell_based_pk);
+                println!("cell_based_value = {:?}",cell_based_row);
+                println!("mem_table_pk = {:?}",mem_table_pk);
+                println!("mem_table_pk_bytes = {:?}",mem_table_pk_bytes);
+                match cell_based_pk.cmp(&mem_table_pk_bytes) {
+                    Ordering::Less => {
+                        // cell_based_table_item will be return
+                        println!("Less");
+                        res = Some((cell_based_pk, cell_based_row));
+                        next_flag = NextOutcome::Storage;
+                    }
+                    Ordering::Equal => {
+                        // mem_table_item will be return, while both cell_based_streaming_iter and
+                        // mem_table_iter need to execute next() once.
+                        println!("Equal");
+                        next_flag = NextOutcome::Both;
+                        match mem_table_row_op {
+                            RowOp::Insert(row) => {
+                                res = Some((mem_table_pk_bytes, row.clone()));
+                            }
+                            RowOp::Delete(_) => { 
+                                println!("走到这里");
+                                next_again = true;
+                            }
+                            RowOp::Update((old_row, new_row)) => {
+                                debug_assert!(old_row == &cell_based_row);
+                                res = Some((mem_table_pk_bytes, new_row.clone()));
+                            }
+                        }
+                    }
+                    Ordering::Greater => {
+                        // mem_table_item will be return
+                        println!("Greater");
+                        next_flag = NextOutcome::MemTable;
+
+                        match mem_table_row_op {
+                            RowOp::Insert(row) => res = Some((mem_table_pk_bytes, row.clone())),
+                            RowOp::Delete(_) => {}
+                            RowOp::Update(_) => {
+                                panic!(
+                                    "There must be a record in shared storage, so this case is unreachable.",
+                                );
+                            }
+                        }
+                        self.cell_based_item = Some((cell_based_pk, cell_based_row));
+                    }
+                }
+            }
+        }
+        match next_flag {
+            NextOutcome::MemTable => {
+                self.mem_table_iter.next();
+            }
+            NextOutcome::Storage => {
+                self.cell_based_item = self.cell_based_streaming_iter.next().await.map_err(err)?;
+            }
+            NextOutcome::Both => {
+                self.mem_table_iter.next();
+                self.cell_based_item = self.cell_based_streaming_iter.next().await.map_err(err)?
+            }
+            NextOutcome::Neither => {}
+        }
+        if next_again{
+            println!("next again");
+            res = self.next_with_pk().await.map_err(err)?;
+        }
         Ok(res)
     }
 }

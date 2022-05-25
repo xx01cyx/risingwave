@@ -222,6 +222,11 @@ impl Row {
         }
         Ok(serializer.into_inner())
     }
+    pub fn reverse_serialize(&self) -> Result<Vec<u8>, memcomparable::Error> {
+        let mut res = self.serialize()?;
+        res.iter_mut().for_each(|byte| *byte = !*byte);
+        Ok(res)
+    }
 
     /// Serialize the row into a memcomparable bytes. All values must not be null.
     pub fn serialize_not_null(&self) -> Result<Vec<u8>, memcomparable::Error> {
