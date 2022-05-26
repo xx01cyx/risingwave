@@ -195,7 +195,7 @@ impl<S: StateStore> CellBasedTable<S> {
         }
     }
 
-    async fn batch_write_rows_inner<const WITH_VALUE_META: bool>(
+    async fn batch_write_rows_inner<const WITH_VALUE_META: bool, const RRVERSE: bool>(
         &mut self,
         buffer: BTreeMap<Row, RowOp>,
         epoch: u64,
@@ -205,10 +205,12 @@ impl<S: StateStore> CellBasedTable<S> {
         let mut local = batch.prefixify(&self.keyspace);
         let ordered_row_serializer = self.pk_serializer.as_ref().unwrap();
         let hash_builder = CRC32FastBuilder {};
-        for (pk, row_op) in buffer.into_iter().rev() {
+        for (pk, row_op) in buffer {
             println!("cell based write pk = {:?}", pk);
-            // let arrange_key_buf = serialize_pk(&pk, ordered_row_serializer).map_err(err)?;
-            let arrange_key_buf = reverse_serialize_pk(&pk, ordered_row_serializer).map_err(err)?;
+            let arrange_key_buf = match RRVERSE {
+                true => reverse_serialize_pk(&pk, ordered_row_serializer).map_err(err)?,
+                false => serialize_pk(&pk, ordered_row_serializer).map_err(err)?,
+            };
             println!("cell based write pk_bytes = {:?}\n", arrange_key_buf);
             let value_meta = if WITH_VALUE_META {
                 // If value meta is computed here, then the cell based table is guaranteed to have
@@ -281,7 +283,8 @@ impl<S: StateStore> CellBasedTable<S> {
         buffer: BTreeMap<Row, RowOp>,
         epoch: u64,
     ) -> StorageResult<()> {
-        self.batch_write_rows_inner::<true>(buffer, epoch).await
+        self.batch_write_rows_inner::<true, false>(buffer, epoch)
+            .await
     }
 
     pub async fn batch_write_rows(
@@ -289,7 +292,17 @@ impl<S: StateStore> CellBasedTable<S> {
         buffer: BTreeMap<Row, RowOp>,
         epoch: u64,
     ) -> StorageResult<()> {
-        self.batch_write_rows_inner::<false>(buffer, epoch).await
+        self.batch_write_rows_inner::<false, false>(buffer, epoch)
+            .await
+    }
+
+    pub async fn batch_write_rows_reverse(
+        &mut self,
+        buffer: BTreeMap<Row, RowOp>,
+        epoch: u64,
+    ) -> StorageResult<()> {
+        self.batch_write_rows_inner::<false, true>(buffer, epoch)
+            .await
     }
 
     // The returned iterator will iterate data from a snapshot corresponding to the given `epoch`

@@ -12,21 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
-
 use madsim::collections::BTreeMap;
-use risingwave_common::{array::Row, catalog::ColumnDesc};
-use risingwave_common::catalog::ColumnId;
+use risingwave_common::array::Row;
+use risingwave_common::catalog::{ColumnDesc, ColumnId};
 use risingwave_common::error::Result;
 use risingwave_common::types::DataType;
 use risingwave_common::util::ordered::*;
-use risingwave_storage::{cell_based_row_deserializer::CellBasedRowDeserializer, table::state_table::StateTable};
-use risingwave_storage::storage_value::StorageValue;
+use risingwave_storage::cell_based_row_deserializer::CellBasedRowDeserializer;
+use risingwave_storage::table::state_table::StateTable;
 use risingwave_storage::{Keyspace, StateStore};
 
-use super::{super::flush_status::BtreeMapFlushStatus as FlushStatus, deserialize_pk};
+use super::deserialize_pk;
 use super::variants::*;
-use super::PkAndRowIterator;
 
 /// This state is used for several ranges (e.g `[0, offset)`, `[offset+limit, +inf)` of elements in
 /// the `AppendOnlyTopNExecutor` and `TopNExecutor`. For these ranges, we only care about one of the
@@ -45,19 +42,19 @@ pub struct ManagedTopNState<S: StateStore, const TOP_N_TYPE: usize> {
     top_n: BTreeMap<OrderedRow, Row>,
     /// Relational table.
     state_table: StateTable<S>,
-    
+
     /// The number of elements in both cache and storage.
     total_count: usize,
     /// Number of entries to retain in memory after each flush.
     top_n_count: Option<usize>,
-    /// The keyspace to operate on.
-    keyspace: Keyspace<S>,
-    /// `DataType`s use for deserializing `Row`.
-    data_types: Vec<DataType>,
+    // /// The keyspace to operate on.
+    // keyspace: Keyspace<S>,
+    // /// `DataType`s use for deserializing `Row`.
+    // data_types: Vec<DataType>,
     /// For deserializing `OrderedRow`.
     ordered_row_deserializer: OrderedRowDeserializer,
-    /// For deserializing `Row`.
-    cell_based_row_deserializer: CellBasedRowDeserializer,
+    // /// For deserializing `Row`.
+    // cell_based_row_deserializer: CellBasedRowDeserializer,
 }
 
 impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
@@ -67,7 +64,7 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
         keyspace: Keyspace<S>,
         data_types: Vec<DataType>,
         ordered_row_deserializer: OrderedRowDeserializer,
-        cell_based_row_deserializer: CellBasedRowDeserializer,
+        _cell_based_row_deserializer: CellBasedRowDeserializer,
     ) -> Self {
         let order_type = ordered_row_deserializer.clone().order_types;
         let column_descs = data_types
@@ -77,16 +74,29 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
                 ColumnDesc::unnamed(ColumnId::from(id as i32), data_type.clone())
             })
             .collect::<Vec<_>>();
-        let state_table = StateTable::new(keyspace.clone(), column_descs, order_type.clone(), None);
+        println!("order_type = {:?}", order_type);
+        // let mut a = vec![];
+        // if TOP_N_TYPE == TOP_N_MAX {
+        //     for each in order_type {
+        //         match each {
+        //             OrderType::Ascending => a.push(OrderType::Descending),
+        //             OrderType::Descending => a.push(OrderType::Ascending),
+        //         }
+        //     }
+        // } else {
+        //     a = order_type.clone();
+        // }
+        // println!("a = {:?}", a);
+        let state_table = StateTable::new(keyspace, column_descs, order_type, None);
         Self {
             top_n: BTreeMap::new(),
             state_table,
             total_count,
             top_n_count,
-            keyspace,
-            data_types,
+            // keyspace,
+            // data_types,
             ordered_row_deserializer,
-            cell_based_row_deserializer,
+            // cell_based_row_deserializer,
         }
     }
 
@@ -213,7 +223,7 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
         // This `order` is defined by the order between two `OrderedRow`.
         // We have to scan all because the top n on the storage may have been deleted by the flush
         // buffer.
-       println!("\n-------------scan_and_merge-----------\n");
+        println!("\n-------------scan_and_merge-----------\n");
         match TOP_N_TYPE {
             TOP_N_MIN => {
                 let mut state_table_iter = self.state_table.iter(epoch).await?;
@@ -262,7 +272,12 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
         Ok(())
     }
 
-    pub async fn delete(&mut self, key: &OrderedRow,value: Row,  epoch: u64) -> Result<Option<Row>> {
+    pub async fn delete(
+        &mut self,
+        key: &OrderedRow,
+        value: Row,
+        epoch: u64,
+    ) -> Result<Option<Row>> {
         let prev_entry = self.top_n.remove(key);
         self.state_table.delete(key.clone().into_row(), value)?;
         self.total_count -= 1;
@@ -308,7 +323,6 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
         Ok(())
     }
 
-
     /// `Flush` can be called by the executor when it receives a barrier and thus needs to
     /// checkpoint.
     ///
@@ -319,8 +333,11 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
             self.retain_top_n();
             return Ok(());
         }
-
-        self.state_table.commit(epoch).await?;
+        match TOP_N_TYPE {
+            TOP_N_MIN => self.state_table.commit(epoch).await?,
+            TOP_N_MAX => self.state_table.commit_reverse(epoch).await?,
+            _ => unreachable!(),
+        }
 
         self.retain_top_n();
         Ok(())
@@ -373,7 +390,7 @@ mod tests {
         )
     }
 
-    #[madsim::test]
+    #[tokio::test]
     async fn test_managed_top_n_state() {
         let store = MemoryStateStore::new();
         let data_types = vec![DataType::Varchar, DataType::Int64];
@@ -467,7 +484,7 @@ mod tests {
             managed_state.pop_top_element(epoch).await.unwrap(),
             Some((ordered_rows[3].clone(), rows[3].clone()))
         );
-        
+
         // now ("abd", 3) on storage -> ("abc", 3) in memory
         assert!(managed_state.is_dirty());
         assert_eq!(managed_state.total_count, 2);

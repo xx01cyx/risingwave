@@ -69,7 +69,7 @@ impl<'a, I: StateStoreIter<Item = (Bytes, Bytes)>, const TOP_N_TYPE: usize>
                 Some((mut pk_buf, row)) => {
                     let pk =
                         deserialize_pk::<TOP_N_TYPE>(&mut pk_buf, self.ordered_row_deserializer)?;
-                        println!("\ndeserialize的时候, pk = {:?}\n", pk);
+                    println!("\ndeserialize的时候, pk = {:?}\n", pk);
                     return Ok(Some((pk, row)));
                 }
                 None => {}
