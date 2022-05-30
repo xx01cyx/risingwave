@@ -74,19 +74,6 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
                 ColumnDesc::unnamed(ColumnId::from(id as i32), data_type.clone())
             })
             .collect::<Vec<_>>();
-        println!("order_type = {:?}", order_type);
-        // let mut a = vec![];
-        // if TOP_N_TYPE == TOP_N_MAX {
-        //     for each in order_type {
-        //         match each {
-        //             OrderType::Ascending => a.push(OrderType::Descending),
-        //             OrderType::Descending => a.push(OrderType::Ascending),
-        //         }
-        //     }
-        // } else {
-        //     a = order_type.clone();
-        // }
-        // println!("a = {:?}", a);
         let state_table = StateTable::new(keyspace, column_descs, order_type, None);
         Self {
             top_n: BTreeMap::new(),
@@ -184,15 +171,6 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
         } else {
             false
         };
-        // let pk_bytes = match TOP_N_TYPE {
-        //     TOP_N_MIN => key.serialize(),
-        //     TOP_N_MAX => key.reverse_serialize(),
-        //     _ => unreachable!(),
-        // }?;
-        // let pk = deserialize_pk::<TOP_N_TYPE>(
-        //     &mut pk_bytes.clone(),
-        //     &mut self.ordered_row_deserializer,
-        // )?;
         // If there may be other keys between `key` and `bottom_key` in the storage,
         // we cannot insert `key` into cache. Instead, we have to flush it onto the storage.
         // This is because other keys may be more qualified to stay in cache.
@@ -231,12 +209,13 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
                     if let Some(top_n_count) = self.top_n_count && self.top_n.len() >= top_n_count {
                         break;
                     }
-                    match state_table_iter.next_with_pk().await? {
+                    match state_table_iter.next_with_pk_top_n_min().await? {
                         Some((pk_bytes, row)) => {
                             let pk = deserialize_pk::<TOP_N_TYPE>(
                                 &mut pk_bytes.clone(),
                                 &mut self.ordered_row_deserializer,
                             )?;
+                            println!("\n*** scan and merge的时候, top_n_type= TOP_N_MIN , insert pk = {:?}",pk);
                             self.top_n.insert(pk, row);
                         }
                         None => {
@@ -258,7 +237,7 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
                                 &mut self.ordered_row_deserializer,
                             )?;
                             // let pk = self.ordered_row_deserializer.deserialize(&pk_bytes)?;
-                            println!("\n*** scan and merge的时候, insert pk = {:?}", pk);
+                            println!("\n*** scan and merge的时候, top_n_type= TOP_N_MAX , insert pk = {:?}",pk);
                             self.top_n.insert(pk, row);
                         }
                         None => {
@@ -296,14 +275,7 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
     /// An element with duplicated key scanned from the storage would just override the element with
     /// the same key in the cache, and their value must be the same.
     pub async fn fill_in_cache(&mut self, epoch: u64) -> Result<()> {
-        println!("\n----------------------fill_in_cache-------------------\n");
         debug_assert!(!self.is_dirty());
-        // let iter = self.keyspace.iter(epoch).await?;
-        // let mut pk_and_row_iter = PkAndRowIterator::<_, TOP_N_TYPE>::new(
-        //     iter,
-        //     &mut self.ordered_row_deserializer,
-        //     &mut self.cell_based_row_deserializer,
-        // );
         let mut state_table_iter = self.state_table.iter(epoch).await?;
         while let Some((pk_bytes, row)) = state_table_iter.next_with_pk().await? {
             let pk = deserialize_pk::<TOP_N_TYPE>(
@@ -311,7 +283,6 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
                 &mut self.ordered_row_deserializer,
             )?;
             // let pk = self.ordered_row_deserializer.deserialize(&pk_bytes)?;
-            println!("pk = {:?}", pk);
             let prev_row = self.top_n.insert(pk, row.clone());
             if let Some(prev_row) = prev_row {
                 debug_assert_eq!(prev_row, row);
@@ -338,7 +309,6 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
             TOP_N_MAX => self.state_table.commit_reverse(epoch).await?,
             _ => unreachable!(),
         }
-
         self.retain_top_n();
         Ok(())
     }
@@ -479,7 +449,6 @@ mod tests {
         assert_eq!(managed_state.get_cache_len(), 2);
         assert_eq!(managed_state.total_count, 3);
 
-        println!("========================");
         assert_eq!(
             managed_state.pop_top_element(epoch).await.unwrap(),
             Some((ordered_rows[3].clone(), rows[3].clone()))
@@ -494,7 +463,6 @@ mod tests {
             Some((ordered_rows[1].clone(), rows[1].clone()))
         );
 
-        println!("pop完了");
         // now ("abd", 3) on storage
         // Popping to 0 element but automatically get at most `2` elements from the storage.
         // However, here we only have one element left as the `total_count` indicates.

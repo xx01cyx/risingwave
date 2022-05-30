@@ -67,7 +67,7 @@ impl OrderedArraysSerializer {
 /// chunk manually.
 #[derive(Clone)]
 pub struct OrderedRowSerializer {
-    order_types: Vec<OrderType>,
+    pub order_types: Vec<OrderType>,
 }
 
 impl OrderedRowSerializer {

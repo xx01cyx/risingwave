@@ -195,7 +195,7 @@ impl<S: StateStore> CellBasedTable<S> {
         }
     }
 
-    async fn batch_write_rows_inner<const WITH_VALUE_META: bool, const RRVERSE: bool>(
+    async fn batch_write_rows_inner<const WITH_VALUE_META: bool, const RVERSE: bool>(
         &mut self,
         buffer: BTreeMap<Row, RowOp>,
         epoch: u64,
@@ -207,7 +207,7 @@ impl<S: StateStore> CellBasedTable<S> {
         let hash_builder = CRC32FastBuilder {};
         for (pk, row_op) in buffer {
             println!("cell based write pk = {:?}", pk);
-            let arrange_key_buf = match RRVERSE {
+            let arrange_key_buf = match RVERSE {
                 true => reverse_serialize_pk(&pk, ordered_row_serializer).map_err(err)?,
                 false => serialize_pk(&pk, ordered_row_serializer).map_err(err)?,
             };

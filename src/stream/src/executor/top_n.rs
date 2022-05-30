@@ -380,7 +380,7 @@ impl<S: StateStore> TopNExecutorBase for InnerTopNExecutor<S> {
                     {
                         // The current element in in the range of `[offset, offset+limit)`
                         self.managed_middle_state
-                            .delete(&ordered_pk_row, epoch)
+                            .delete(&ordered_pk_row, row.clone(), epoch)
                             .await
                             .map_err(StreamExecutorError::top_n_state_error)?;
                         new_ops.push(Op::Delete);
@@ -816,7 +816,6 @@ mod tests {
             top_n_executor.next().await.unwrap().unwrap(),
             Message::Barrier(_)
         );
-
         let res = top_n_executor.next().await.unwrap().unwrap();
         assert_eq!(
             *res.as_chunk().unwrap(),
@@ -831,7 +830,7 @@ mod tests {
             top_n_executor.next().await.unwrap().unwrap(),
             Message::Barrier(_)
         );
-
+        println!("---这里6---");
         let res = top_n_executor.next().await.unwrap().unwrap();
         assert_eq!(
             *res.as_chunk().unwrap(),
@@ -845,7 +844,6 @@ mod tests {
                 + 14 12"
             )
         );
-
         // (7, 8, 9) -> (10, 13, 14, _)
         // barrier
         assert_matches!(
