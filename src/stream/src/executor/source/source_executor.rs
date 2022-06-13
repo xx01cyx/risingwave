@@ -35,6 +35,13 @@ use crate::executor::monitor::StreamingMetrics;
 use crate::executor::source::state::SourceStateHandler;
 use crate::executor::*;
 
+#[derive(Debug)]
+enum AbortMessage {
+    Pause,
+    Resume,
+    SourceChange,
+}
+
 /// [`SourceExecutor`] is a streaming source, from risingwave's batch table, or external systems
 /// such as Kafka.
 pub struct SourceExecutor<S: StateStore> {
@@ -148,45 +155,78 @@ impl SourceReader {
         stream_reader: Arc<Mutex<Option<Box<SourceStreamReaderImpl>>>>,
         #[expect(unused_variables)] notifier: Arc<Notify>,
         #[expect(unused_variables)] expected_barrier_latency_ms: u64,
-        mut abort_notifier: UnboundedReceiver<()>,
+        mut abort_notifier: UnboundedReceiver<AbortMessage>,
     ) {
+        let mut reader_tmp = None;
         'outer: loop {
-            let mut reader = stream_reader.lock().await.take().unwrap();
-            let chunk_result: Option<Result<StreamChunkWithState>>;
+            let mut reader = stream_reader.lock().await.take();
 
-            {
-                let chunk_future = reader.next();
-                let abort_future = abort_notifier.recv();
+            if reader.is_some() && reader_tmp.is_none() {
+                // running
+                let chunk_result: Option<Result<StreamChunkWithState>>;
+                let mut reader = reader.take().unwrap();
+                let mut receive_pause_msg = false;
 
-                pin_mut!(chunk_future);
-                pin_mut!(abort_future);
+                {
+                    let chunk_future = reader.next();
+                    let abort_future = abort_notifier.recv();
 
-                match futures::future::select(chunk_future, abort_future).await {
-                    futures::future::Either::Left((chunk, _)) => {
-                        chunk_result = Some(chunk);
-                    }
-                    futures::future::Either::Right(_) => {
-                        chunk_result = None;
+                    pin_mut!(chunk_future);
+                    pin_mut!(abort_future);
+
+                    match futures::future::select(chunk_future, abort_future).await {
+                        futures::future::Either::Left((chunk, _)) => {
+                            chunk_result = Some(chunk);
+                        }
+                        futures::future::Either::Right(msg) => {
+                            if let Some(AbortMessage::Pause) = msg.0 {
+                                receive_pause_msg = true;
+                            }
+                            chunk_result = None;
+                        }
                     }
                 }
-            }
 
-            let mut reader_guard = stream_reader.lock().await;
-            if reader_guard.is_none() {
-                *reader_guard = Some(reader);
+                if receive_pause_msg {
+                    reader_tmp = Some(reader);
+                    continue;
+                }
+
+                let mut reader_guard = stream_reader.lock().await;
+                if reader_guard.is_none() {
+                    *reader_guard = Some(reader);
+                } else {
+                    continue;
+                }
+                drop(reader_guard);
+                if let Some(chunk) = chunk_result {
+                    match chunk {
+                        Ok(c) => yield c,
+                        Err(e) => {
+                            error!("hang up stream reader due to polling error: {}", e);
+                            break 'outer;
+                        }
+                    }
+                };
+            } else if reader.is_some() && reader_tmp.is_some() {
+                // paused but reader has been updated by SourceChange
+                reader_tmp = reader.take();
+                continue;
             } else {
+                // paused
+                let msg = abort_notifier.recv().await.unwrap();
+                if let AbortMessage::Resume = msg {
+                    if reader_tmp.is_some() {
+                        let mut reader_guard = stream_reader.lock().await;
+                        if reader_guard.is_none() {
+                            *reader_guard = reader_tmp.take();
+                        } else {
+                            reader_tmp = None;
+                        }
+                    }
+                }
                 continue;
             }
-            drop(reader_guard);
-            if let Some(chunk) = chunk_result {
-                match chunk {
-                    Ok(c) => yield c,
-                    Err(e) => {
-                        error!("hang up stream reader due to polling error: {}", e);
-                        break 'outer;
-                    }
-                }
-            };
         }
 
         futures::future::pending().await
@@ -205,7 +245,7 @@ impl SourceReader {
 
     fn into_stream(
         self,
-        abort_notifier: UnboundedReceiver<()>,
+        abort_notifier: UnboundedReceiver<AbortMessage>,
     ) -> impl Stream<Item = Either<Result<Message>, Result<StreamChunkWithState>>> {
         let notifier = Arc::new(Notify::new());
 
@@ -343,7 +383,7 @@ impl<S: StateStore> SourceExecutor<S> {
         };
         yield Message::Barrier(barrier);
 
-        let (abort_tx, abort_rx) = unbounded_channel::<()>();
+        let (abort_tx, abort_rx) = unbounded_channel::<AbortMessage>();
 
         #[for_await]
         for msg in reader.into_stream(abort_rx) {
@@ -356,30 +396,38 @@ impl<S: StateStore> SourceExecutor<S> {
                             self.take_snapshot(epoch)
                                 .await
                                 .map_err(StreamExecutorError::source_error)?;
-
-                            if let Some(Mutation::SourceChangeSplit(mapping)) =
-                                barrier.mutation.as_deref()
-                            {
-                                if let Some(target_splits) = mapping.get(&self.actor_id).cloned() {
-                                    match self.get_diff(target_splits) {
-                                        None => {}
-                                        Some(target_state) => {
-                                            log::info!(
-                                                "actor {:?} apply source split change to {:?}",
-                                                self.actor_id,
-                                                target_state
-                                            );
-                                            let reader = self
-                                                .build_stream_source_reader(Some(
-                                                    target_state.clone(),
-                                                ))
-                                                .await
-                                                .map_err(StreamExecutorError::source_error)?;
-                                            abort_tx.send(()).unwrap();
-                                            *stream_reader.lock().await = Some(reader);
-                                            self.stream_source_splits = target_state;
+                            if let Some(mutation) = barrier.mutation.as_deref() {
+                                match mutation {
+                                    Mutation::SourceChangeSplit(mapping) => {
+                                        if let Some(target_splits) =
+                                            mapping.get(&self.actor_id).cloned()
+                                        {
+                                            if let Some(target_state) = self.get_diff(target_splits)
+                                            {
+                                                log::info!(
+                                                    "actor {:?} apply source split change to {:?}",
+                                                    self.actor_id,
+                                                    target_state
+                                                );
+                                                let reader = self
+                                                    .build_stream_source_reader(Some(
+                                                        target_state.clone(),
+                                                    ))
+                                                    .await
+                                                    .map_err(StreamExecutorError::source_error)?;
+                                                abort_tx.send(AbortMessage::SourceChange).unwrap();
+                                                *stream_reader.lock().await = Some(reader);
+                                                self.stream_source_splits = target_state;
+                                            }
                                         }
                                     }
+                                    Mutation::Pause(_) => {
+                                        abort_tx.send(AbortMessage::Pause).unwrap();
+                                    }
+                                    Mutation::Resume(_) => {
+                                        abort_tx.send(AbortMessage::Resume).unwrap();
+                                    }
+                                    _ => {}
                                 }
                             }
                             self.state_cache.clear();
@@ -894,6 +942,13 @@ mod tests {
         );
         assert_eq!(drop_row_id(chunk_3.unwrap()), drop_row_id(chunk_3_truth));
 
+        let pause_barrier =
+            Barrier::new_test_barrier(curr_epoch + 2).with_mutation(Mutation::Pause(()));
+        barrier_tx.send(pause_barrier).unwrap();
+
+        let pause_barrier =
+            Barrier::new_test_barrier(curr_epoch + 3).with_mutation(Mutation::Resume(()));
+        barrier_tx.send(pause_barrier).unwrap();
         Ok(())
     }
 }

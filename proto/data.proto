@@ -155,6 +155,10 @@ message SourceChangeSplitMutation {
   map<uint32, source.ConnectorSplits> actor_splits = 2;
 }
 
+message PauseMutation {}
+
+message ResumeMutation {}
+
 message Epoch {
   uint64 curr = 1;
   uint64 prev = 2;
@@ -167,6 +171,8 @@ message Barrier {
     UpdateMutation update = 4;
     AddMutation add = 5;
     SourceChangeSplitMutation splits = 7;
+    PauseMutation pause = 8;
+    ResumeMutation resume = 9;
   }
   bytes span = 6;
 }
