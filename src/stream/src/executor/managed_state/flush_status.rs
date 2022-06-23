@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use madsim::collections::btree_map;
+use std::collections::btree_map;
 
 /// Represents an entry in the `flush_buffer`. No `FlushStatus` associated with a key means no-op.
 ///

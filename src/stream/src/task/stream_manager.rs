@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use core::time::Duration;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 
 use itertools::Itertools;
-use madsim::collections::{HashMap, HashSet};
 use parking_lot::Mutex;
 use risingwave_common::buffer::Bitmap;
 use risingwave_common::config::StreamingConfig;
