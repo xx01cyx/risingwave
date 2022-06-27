@@ -226,7 +226,7 @@ impl<S: StateStore> ManagedTopNBottomNState<S> {
     /// The same as the one in `ManagedTopNState`.
     pub async fn scan_from_relational_table(&mut self, epoch: u64) -> StreamExecutorResult<()> {
         let mut kv_pairs = vec![];
-        let state_table_iter = self.state_table.iter(epoch).await?;
+        let state_table_iter = self.state_table.row_based_iter(epoch).await?;
         pin_mut!(state_table_iter);
         while let Some(next_res) = state_table_iter.next().await {
             let row = next_res.unwrap().into_owned();
@@ -262,7 +262,7 @@ impl<S: StateStore> ManagedTopNBottomNState<S> {
     /// `flush`.
     pub async fn fill_in_cache(&mut self, epoch: u64) -> StreamExecutorResult<()> {
         debug_assert!(!self.is_dirty());
-        let state_table_iter = self.state_table.iter(epoch).await?;
+        let state_table_iter = self.state_table.row_based_iter(epoch).await?;
         pin_mut!(state_table_iter);
         while let Some(res) = state_table_iter.next().await {
             let row = res.unwrap().into_owned();
@@ -286,7 +286,7 @@ impl<S: StateStore> ManagedTopNBottomNState<S> {
             return Ok(());
         }
 
-        self.state_table.commit(epoch).await?;
+        self.state_table.commit_with_row_based(epoch).await?;
 
         // We don't retain `n` elements as we have a all-or-nothing policy for now.
         Ok(())

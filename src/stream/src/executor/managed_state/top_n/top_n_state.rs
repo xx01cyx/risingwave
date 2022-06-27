@@ -202,7 +202,7 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
     /// This function scans rows by `StateTableRowIter`, which scan rows from the
     /// `shared_storage`(`cell_based_table`) and memory(`mem_table`) .
     pub async fn scan_from_relational_table(&mut self, epoch: u64) -> StreamExecutorResult<()> {
-        let state_table_iter = self.state_table.iter(epoch).await?;
+        let state_table_iter = self.state_table.row_based_iter(epoch).await?;
         pin_mut!(state_table_iter);
 
         loop {
@@ -255,7 +255,7 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
     /// the same key in the cache, and their value must be the same.
     pub async fn fill_in_cache(&mut self, epoch: u64) -> StreamExecutorResult<()> {
         debug_assert!(!self.is_dirty());
-        let state_table_iter = self.state_table.iter(epoch).await?;
+        let state_table_iter = self.state_table.row_based_iter(epoch).await?;
         pin_mut!(state_table_iter);
         while let Some(res) = state_table_iter.next().await {
             let row = res.unwrap().into_owned();
@@ -286,7 +286,7 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
             self.retain_top_n();
             return Ok(());
         }
-        self.state_table.commit(epoch).await?;
+        self.state_table.commit_with_row_based(epoch).await?;
 
         self.retain_top_n();
         Ok(())

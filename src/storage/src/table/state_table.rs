@@ -19,6 +19,7 @@ use std::ops::{Index, RangeBounds};
 
 use futures::{pin_mut, Stream, StreamExt};
 use futures_async_stream::try_stream;
+use itertools::Itertools;
 use risingwave_common::array::Row;
 use risingwave_common::catalog::ColumnDesc;
 use risingwave_common::util::ordered::{serialize_pk, OrderedRowSerializer};
@@ -27,6 +28,7 @@ use risingwave_hummock_sdk::key::range_of_prefix;
 
 use super::cell_based_table::CellBasedTable;
 use super::mem_table::{MemTable, RowOp};
+use super::row_based_table::RowBasedTable;
 use crate::error::{StorageError, StorageResult};
 use crate::{Keyspace, StateStore};
 
@@ -38,6 +40,8 @@ pub struct StateTable<S: StateStore> {
 
     /// Relation layer
     cell_based_table: CellBasedTable<S>,
+
+    row_based_table: RowBasedTable<S>,
 }
 
 impl<S: StateStore> StateTable<S> {
@@ -48,9 +52,21 @@ impl<S: StateStore> StateTable<S> {
         dist_key_indices: Option<Vec<usize>>,
         pk_indices: Vec<usize>,
     ) -> Self {
+        let data_types = column_descs
+            .clone()
+            .into_iter()
+            .map(|t| t.data_type)
+            .collect_vec();
         Self {
             mem_table: MemTable::new(),
             cell_based_table: CellBasedTable::new(
+                keyspace.clone(),
+                column_descs.clone(),
+                order_types.clone(),
+                pk_indices.clone(),
+                dist_key_indices.clone(),
+            ),
+            row_based_table: RowBasedTable::new(
                 keyspace,
                 column_descs,
                 order_types,
@@ -63,6 +79,11 @@ impl<S: StateStore> StateTable<S> {
     /// Get the underlying [`CellBasedTable`]. Should only be used for tests.
     pub fn cell_based_table(&self) -> &CellBasedTable<S> {
         &self.cell_based_table
+    }
+
+    /// Get the underlying [`RowBasedTable`]. Should only be used for tests.
+    pub fn row_based_table(&self) -> &RowBasedTable<S> {
+        &self.row_based_table
     }
 
     fn pk_serializer(&self) -> &OrderedRowSerializer {
@@ -145,6 +166,14 @@ impl<S: StateStore> StateTable<S> {
         Ok(())
     }
 
+    pub async fn commit_with_row_based(&mut self, new_epoch: u64) -> StorageResult<()> {
+        let mem_table = std::mem::take(&mut self.mem_table).into_parts();
+        self.row_based_table
+            .batch_write_rows(mem_table, new_epoch)
+            .await?;
+        Ok(())
+    }
+
     pub async fn commit_with_value_meta(&mut self, new_epoch: u64) -> StorageResult<()> {
         let mem_table = std::mem::take(&mut self.mem_table).into_parts();
         self.cell_based_table
@@ -156,7 +185,7 @@ impl<S: StateStore> StateTable<S> {
 
 /// Iterator functions.
 impl<S: StateStore> StateTable<S> {
-    async fn iter_with_encoded_key_range<'a, R>(
+    async fn iter_with_encoded_key_range<'a, R,>(
         &'a self,
         encoded_key_range: R,
         epoch: u64,
@@ -172,10 +201,54 @@ impl<S: StateStore> StateTable<S> {
 
         Ok(StateTableRowIter::new(mem_table_iter, cell_based_table_iter).into_stream())
     }
+    
+    async fn row_based_iter_with_encoded_key_range<'a, R>(
+        &'a self,
+        encoded_key_range: R,
+        epoch: u64,
+    ) -> StorageResult<RowBasedStream<'a, S>>
+    where
+        R: RangeBounds<Vec<u8>> + Send + Clone + 'a,
+    {
+        let row_based_table_iter = self
+            .row_based_table
+            .streaming_iter_with_encoded_key_range(encoded_key_range.clone(), epoch)
+            .await?;
+        let mem_table_iter = self.mem_table.iter(encoded_key_range);
+
+        Ok(StateTableRowBasedIter::new(mem_table_iter, row_based_table_iter).into_stream())
+    }
+    
+
+    /// This function scans rows from the relational table with specific `pk_bounds`.
+    pub async fn row_based_iter_with_pk_bounds<R, B>(
+        &self,
+        pk_bounds: R,
+        epoch: u64,
+    ) -> StorageResult<RowBasedStream<'_, S>>
+    where
+        R: RangeBounds<B> + Send + Clone + 'static,
+        B: AsRef<Row> + Send + Clone + 'static,
+    {
+        let encoded_start_key = pk_bounds
+            .start_bound()
+            .map(|pk| serialize_pk(pk.as_ref(), self.pk_serializer()));
+        let encoded_end_key = pk_bounds
+            .end_bound()
+            .map(|pk| serialize_pk(pk.as_ref(), self.pk_serializer()));
+        let encoded_key_range = (encoded_start_key, encoded_end_key);
+
+        self.row_based_iter_with_encoded_key_range(encoded_key_range, epoch)
+            .await
+    }
 
     /// This function scans rows from the relational table.
     pub async fn iter(&self, epoch: u64) -> StorageResult<RowStream<'_, S>> {
         self.iter_with_pk_bounds::<_, Row>(.., epoch).await
+    }
+
+    pub async fn row_based_iter(&self, epoch: u64) -> StorageResult<RowBasedStream<'_, S>> {
+        self.row_based_iter_with_pk_bounds::<_, Row>(.., epoch).await
     }
 
     /// This function scans rows from the relational table with specific `pk_bounds`.
@@ -313,6 +386,110 @@ where
                 (Some(Err(_)), Some(_)) => {
                     // Throw the error.
                     return Err(cell_based_table_iter.next().await.unwrap().unwrap_err());
+                }
+            }
+        }
+    }
+
+}
+
+pub type RowBasedStream<'a, S: StateStore> = impl Stream<Item = StorageResult<Cow<'a, Row>>>;
+struct StateTableRowBasedIter<'a, M, C> {
+    mem_table_iter: M,
+    row_based_table_iter: C,
+    _phantom: PhantomData<&'a ()>,
+}
+
+/// `StateTableRowIter` is able to read the just written data (uncommited data).
+/// It will merge the result of `mem_table_iter` and `cell_based_streaming_iter`.
+impl<'a, M, C> StateTableRowBasedIter<'a, M, C>
+where
+    M: Iterator<Item = (&'a Vec<u8>, &'a RowOp)>,
+    C: Stream<Item = StorageResult<(Vec<u8>, Row)>>,
+{
+    fn new(mem_table_iter: M, row_based_table_iter: C) -> Self {
+        Self {
+            mem_table_iter,
+            row_based_table_iter,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// This function scans kv pairs from the `shared_storage`(`cell_based_table`) and
+    /// memory(`mem_table`) with optional pk_bounds. If pk_bounds is
+    /// (Included(prefix),Excluded(next_key(prefix))), all kv pairs within corresponding prefix will
+    /// be scanned. If a record exist in both `cell_based_table` and `mem_table`, result
+    /// `mem_table` is returned according to the operation(RowOp) on it.
+    #[try_stream(ok = Cow<'a, Row>, error = StorageError)]
+    async fn into_stream(self) {
+        let row_based_table_iter = self.row_based_table_iter.fuse().peekable();
+        pin_mut!(row_based_table_iter);
+
+        let mut mem_table_iter = self.mem_table_iter.fuse().peekable();
+
+        loop {
+            match (
+                row_based_table_iter.as_mut().peek().await,
+                mem_table_iter.peek(),
+            ) {
+                (None, None) => break,
+                // The mem table side has come to an end, return data from the shared storage.
+                (Some(_), None) => {
+                    let (_, row) = row_based_table_iter.next().await.unwrap()?;
+                    yield Cow::Owned(row);
+                }
+                // The stream side has come to an end, return data from the mem table.
+                (None, Some(_)) => {
+                    let (_, row_op) = mem_table_iter.next().unwrap();
+                    match row_op {
+                        RowOp::Insert(row) | RowOp::Update((_, row)) => {
+                            yield Cow::Borrowed(row);
+                        }
+                        _ => {}
+                    }
+                }
+                (Some(Ok((cell_based_pk, _))), Some((mem_table_pk, _))) => {
+                    match cell_based_pk.cmp(mem_table_pk) {
+                        Ordering::Less => {
+                            // yield data from cell based table
+                            let (_, row) = row_based_table_iter.next().await.unwrap()?;
+                            yield Cow::Owned(row);
+                        }
+                        Ordering::Equal => {
+                            // both memtable and storage contain the key, so we advance both
+                            // iterators and return the data in memory.
+                            let (_, row_op) = mem_table_iter.next().unwrap();
+                            let (_, old_row_in_storage) =
+                            row_based_table_iter.next().await.unwrap()?;
+                            match row_op {
+                                RowOp::Insert(row) => {
+                                    yield Cow::Borrowed(row);
+                                }
+                                RowOp::Delete(_) => {}
+                                RowOp::Update((old_row, new_row)) => {
+                                    debug_assert!(old_row == &old_row_in_storage);
+                                    yield Cow::Borrowed(new_row);
+                                }
+                            }
+                        }
+                        Ordering::Greater => {
+                            // yield data from mem table
+                            let (_, row_op) = mem_table_iter.next().unwrap();
+                            match row_op {
+                                RowOp::Insert(row) => {
+                                    yield Cow::Borrowed(row);
+                                }
+                                RowOp::Delete(_) => {}
+                                RowOp::Update(_) => unreachable!(
+                                    "memtable update should always be paired with a storage key"
+                                ),
+                            }
+                        }
+                    }
+                }
+                (Some(Err(_)), Some(_)) => {
+                    // Throw the error.
+                    return Err(row_based_table_iter.next().await.unwrap().unwrap_err());
                 }
             }
         }

@@ -34,6 +34,13 @@ pub enum StorageError {
         RwError,
     ),
 
+    #[error("Row-based table error: {0}")]
+    RowBasedTable(
+        #[backtrace]
+        #[source]
+        RwError,
+    ),
+
     #[error("State table error: {0}")]
     StateTable(
         #[backtrace]

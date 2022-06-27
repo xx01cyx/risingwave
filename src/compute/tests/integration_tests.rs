@@ -37,6 +37,7 @@ use risingwave_pb::plan_common::ColumnDesc as ProstColumnDesc;
 use risingwave_source::{MemSourceManager, SourceManager};
 use risingwave_storage::memory::MemoryStateStore;
 use risingwave_storage::table::cell_based_table::CellBasedTable;
+use risingwave_storage::table::row_based_table::RowBasedTable;
 use risingwave_storage::table::state_table::StateTable;
 use risingwave_storage::Keyspace;
 use risingwave_stream::executor::monitor::StreamingMetrics;

@@ -14,6 +14,7 @@
 
 pub mod cell_based_table;
 pub mod mem_table;
+pub mod row_based_table;
 pub mod state_table;
 
 #[cfg(test)]

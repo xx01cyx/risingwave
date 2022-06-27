@@ -54,6 +54,8 @@ pub mod storage_value;
 #[macro_use]
 pub mod store;
 pub mod error;
+pub mod row_based_deserializer;
+pub mod row_based_serializer;
 pub mod store_impl;
 pub mod table;
 pub mod write_batch;
