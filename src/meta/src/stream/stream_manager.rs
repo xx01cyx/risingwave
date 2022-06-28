@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,7 +22,7 @@ use risingwave_common::catalog::TableId;
 use risingwave_common::error::{internal_error, Result};
 use risingwave_common::types::{ParallelUnitId, VIRTUAL_NODE_COUNT};
 use risingwave_pb::catalog::Source;
-use risingwave_pb::common::{ActorInfo, ParallelUnitMapping, WorkerType};
+use risingwave_pb::common::{ActorInfo, ParallelUnitMapping, WorkerNode, WorkerType};
 use risingwave_pb::meta::table_fragments::{ActorState, ActorStatus};
 use risingwave_pb::stream_plan::stream_node::NodeBody;
 use risingwave_pb::stream_plan::{ActorMapping, DispatcherType, StreamNode};
@@ -93,8 +93,8 @@ pub struct GlobalStreamManager<S: MetaStore> {
 }
 
 impl<S> GlobalStreamManager<S>
-where
-    S: MetaStore,
+    where
+        S: MetaStore,
 {
     pub async fn new(
         env: MetaSrvEnv<S>,
@@ -259,6 +259,30 @@ where
         Ok(())
     }
 
+    pub async fn migrate_actor(&self, actor_map: HashMap<TableId, HashMap<ActorId, WorkerNode>>) -> Result<()> {
+        let mut locations = self.fetch_scheduled_locations().await?;
+
+        let table_ids = actor_map.keys().collect();
+        let node_actors = self.fragment_manager.get_tables_node_actors(&table_ids).await?;
+
+        for (table_id, actors) in actor_map {
+            let table_node_actors = node_actors.get(&table_id).unwrap();
+
+            let mut actors_node = HashMap::new();
+            for (worker_id, actor_ids) in table_node_actors {
+                actors_node.extend(actor_ids.into_iter().map(|actor_id| (*actor_id, *worker_id)))
+            }
+
+            // for (actor_id, worker_id) in actors {
+            //
+            // }
+        }
+
+//        self.barrier_manager.run_command(Command::Plain())
+
+        todo!()
+    }
+
     /// Create materialized view, it works as follows:
     /// 1. schedule the actors to nodes in the cluster.
     /// 2. broadcast the actor info table.
@@ -281,19 +305,7 @@ where
             ..
         }: CreateMaterializedViewContext,
     ) -> Result<()> {
-        let nodes = self
-            .cluster_manager
-            .list_worker_node(
-                WorkerType::ComputeNode,
-                Some(risingwave_pb::common::worker_node::State::Running),
-            )
-            .await;
-        if nodes.is_empty() {
-            return Err(internal_error("no available compute node in the cluster"));
-        }
-
-        let mut locations = ScheduledLocations::new();
-        locations.node_locations = nodes.into_iter().map(|node| (node.id, node)).collect();
+        let mut locations = self.fetch_scheduled_locations().await?;
 
         let topological_order = table_fragments.generate_topological_order();
 
@@ -314,7 +326,7 @@ where
             &mut upstream_node_actors,
             &locations,
         )
-        .await?;
+            .await?;
 
         // Verify whether all same_as_upstream constraints are satisfied.
         //
@@ -588,6 +600,23 @@ where
         Ok(())
     }
 
+    async fn fetch_scheduled_locations(&self) -> Result<ScheduledLocations> {
+        let nodes = self
+            .cluster_manager
+            .list_worker_node(
+                WorkerType::ComputeNode,
+                Some(risingwave_pb::common::worker_node::State::Running),
+            )
+            .await;
+        if nodes.is_empty() {
+            return Err(internal_error("no available compute node in the cluster"));
+        }
+
+        let mut locations = ScheduledLocations::new();
+        locations.node_locations = nodes.into_iter().map(|node| (node.id, node)).collect();
+        Ok(locations)
+    }
+
     /// Dropping materialized view is done by barrier manager. Check
     /// [`Command::DropMaterializedView`] for details.
     pub async fn drop_materialized_view(&self, table_id: &TableId) -> Result<()> {
@@ -848,7 +877,7 @@ mod tests {
                     compaction_group_manager.clone(),
                     compactor_manager.clone(),
                 )
-                .await?,
+                    .await?,
             );
 
             let barrier_manager = Arc::new(GlobalBarrierManager::new(
@@ -872,7 +901,7 @@ mod tests {
                     fragment_manager.clone(),
                     compaction_group_manager.clone(),
                 )
-                .await?,
+                    .await?,
             );
 
             let stream_manager = GlobalStreamManager::new(
@@ -882,7 +911,7 @@ mod tests {
                 cluster_manager.clone(),
                 source_manager.clone(),
             )
-            .await?;
+                .await?;
 
             let (join_handle_2, shutdown_tx_2) = GlobalBarrierManager::start(barrier_manager).await;
 
@@ -1245,7 +1274,7 @@ mod tests {
                 fail::remove(inject_barrier_err_success);
                 notify.notify_one();
             })
-            .unwrap();
+                .unwrap();
         });
         notify1.notified().await;
 
