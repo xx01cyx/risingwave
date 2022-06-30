@@ -67,10 +67,6 @@ impl<S: StateStore> MaterializeExecutor<S> {
             .zip_eq(schema.fields.iter().cloned())
             .map(|(column_id, field)| ColumnDesc::unnamed(column_id, field.data_type()))
             .collect_vec();
-        println!("Column descs: {:?}", column_descs);
-        println!("arrange_order_type: {:?}", arrange_order_types);
-        println!("arrange columns: {:?}", arrange_columns_set);
-        println!("arrange dist key: {:?}", dist_key_set);
         Self {
             input,
             state_table: StateTable::new(
