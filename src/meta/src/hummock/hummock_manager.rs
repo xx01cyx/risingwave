@@ -1279,12 +1279,6 @@ where
         commit_multi_var!(self, None, stale_sstables)?;
         hummock_versions.commit();
 
-        #[cfg(test)]
-        {
-            drop(versioning_guard);
-            self.check_state_consistency().await;
-        }
-
         Ok(())
     }
 

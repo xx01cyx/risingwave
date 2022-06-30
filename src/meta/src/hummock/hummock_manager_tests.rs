@@ -626,6 +626,10 @@ async fn test_hummock_manager_basic() {
         .delete_versions(&[FIRST_VERSION_ID])
         .await
         .unwrap();
+    assert_eq!(
+        hummock_manager.list_version_ids_asc().await.unwrap(),
+        vec![FIRST_VERSION_ID + 1]
+    );
 }
 
 #[tokio::test]
