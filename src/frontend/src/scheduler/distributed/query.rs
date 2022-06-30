@@ -213,8 +213,8 @@ impl QueryRunner {
         for stage_id in &leaf_stages {
             // TODO: We should not return error here, we should abort query.
             info!(
-                "Starting query stage: {:?}-{:?}",
-                self.query.query_id, stage_id
+                "Starting query stage: {:?}-{:?},epoch:{:?},query{:?}",
+                self.query.query_id, stage_id,self.epoch,self.query,
             );
             self.stage_executions[stage_id].start().await.map_err(|e| {
                 error!("Failed to start stage: {}, reason: {:?}", stage_id, e);

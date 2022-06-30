@@ -25,7 +25,7 @@ pub(super) struct Notifier {
     pub collected: Option<oneshot::Sender<Result<()>>>,
 
     /// Get notified when scheduled barrier is finished.
-    pub finished: Option<oneshot::Sender<()>>,
+    pub finished: Option<oneshot::Sender<u64>>,
 }
 
 impl Notifier {
@@ -55,9 +55,9 @@ impl Notifier {
     /// Generally when a barrier is collected, it's also finished since it does not require further
     /// report of finishing from actors.
     /// However for creating MV, this is only called when all `Chain` report it finished.
-    pub fn notify_finished(self) {
+    pub fn notify_finished(self,epoch: u64) {
         if let Some(tx) = self.finished {
-            tx.send(()).ok();
+            tx.send(epoch).ok();
         }
     }
 }

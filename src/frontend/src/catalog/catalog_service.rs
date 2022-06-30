@@ -62,7 +62,7 @@ pub trait CatalogWriter: Send + Sync {
         &self,
         table: ProstTable,
         graph: StreamFragmentGraph,
-    ) -> Result<()>;
+    ) -> Result<u64>;
 
     async fn create_materialized_source(
         &self,
@@ -127,12 +127,13 @@ impl CatalogWriter for CatalogWriterImpl {
         &self,
         table: ProstTable,
         graph: StreamFragmentGraph,
-    ) -> Result<()> {
-        let (_, version) = self
+    ) -> Result<u64> {
+        let (_, version,epoch) = self
             .meta_client
             .create_materialized_view(table, graph)
             .await?;
-        self.wait_version(version).await
+        self.wait_version(version).await?;
+        Ok(epoch)
     }
 
     async fn create_materialized_source(

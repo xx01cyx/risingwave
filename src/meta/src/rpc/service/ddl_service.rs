@@ -296,7 +296,7 @@ where
             affiliated_source: None,
             ..Default::default()
         };
-        let internal_tables = match self
+        let (internal_tables,epoch) = match self
             .create_mview_on_compute_node(fragment_graph, id, ctx)
             .await
         {
@@ -307,12 +307,12 @@ where
                     .map_err(tonic_err)?;
                 return Err(e.into());
             }
-            Ok(mut inner_internal_tables) => {
+            Ok((mut inner_internal_tables,epoch)) => {
                 self.set_table_mapping(&mut mview).map_err(tonic_err)?;
                 for inner_table in &mut inner_internal_tables {
                     self.set_table_mapping(inner_table).map_err(tonic_err)?;
                 }
-                inner_internal_tables
+                (inner_internal_tables,epoch)
             }
         };
         // 4. Finally, update the catalog.
@@ -326,6 +326,7 @@ where
             status: None,
             table_id: id,
             version,
+            epoch,
         }))
     }
 
@@ -419,7 +420,7 @@ where
         mut fragment_graph: StreamFragmentGraph,
         id: TableId,
         mut ctx: CreateMaterializedViewContext,
-    ) -> RwResult<Vec<Table>> {
+    ) -> RwResult<(Vec<Table>,u64)> {
         use risingwave_common::catalog::TableId;
 
         // Fill in the correct mview id for stream node.
@@ -487,11 +488,11 @@ where
             TableFragments::new(mview_id, graph, ctx.internal_table_id_set.clone());
 
         // Create on compute node.
-        self.stream_manager
+        let epoch = self.stream_manager
             .create_materialized_view(table_fragments, ctx)
             .await?;
 
-        Ok(internal_tables)
+        Ok((internal_tables,epoch))
     }
 
     async fn create_materialized_source_inner(
@@ -579,7 +580,7 @@ where
                 self.source_manager.drop_source(source_id).await?;
                 return Err(e);
             }
-            Ok(mut inner_internal_tables) => {
+            Ok((mut inner_internal_tables,epoch)) => {
                 self.set_table_mapping(&mut mview).map_err(tonic_err)?;
                 for inner_table in &mut inner_internal_tables {
                     self.set_table_mapping(inner_table).map_err(tonic_err)?;

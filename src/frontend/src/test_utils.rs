@@ -171,7 +171,7 @@ impl CatalogWriter for MockCatalogWriter {
         &self,
         mut table: ProstTable,
         _graph: StreamFragmentGraph,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         table.id = self.gen_id();
         table.mapping = Some(ParallelUnitMapping {
             table_id: table.id,
@@ -180,7 +180,7 @@ impl CatalogWriter for MockCatalogWriter {
         });
         self.catalog.write().create_table(&table);
         self.add_table_or_source_id(table.id, table.schema_id, table.database_id);
-        Ok(())
+        Ok(1 as u64)
     }
 
     async fn create_materialized_source(

@@ -51,13 +51,13 @@ pub fn make_state_table<S: StateStore>(hummock: S, table: &TableCatalog) -> Stat
     )
 }
 
-pub async fn scan(table_id: String) -> Result<()> {
+pub async fn scan(table_id: String,epoch:u64) -> Result<()> {
     let mut hummock_opts = HummockServiceOpts::from_env()?;
     let (meta, hummock) = hummock_opts.create_hummock_store().await?;
     let table = get_table_catalog(meta.clone(), table_id).await?;
     print_table_catalog(&table);
     let state_table = make_state_table(hummock.clone(), &table);
-    let stream = state_table.iter(u64::MAX).await?;
+    let stream = state_table.iter(epoch).await?;
     pin_mut!(stream);
     while let Some(item) = stream.next().await {
         let item = item?;

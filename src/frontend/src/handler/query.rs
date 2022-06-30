@@ -98,12 +98,12 @@ async fn distribute_execute(
 
         info!(
             "Generated distributed plan: {:?}",
-            plan.explain_to_string()?
+            plan.explain_to_string()?.clone()
         );
 
         let plan_fragmenter = BatchPlanFragmenter::new(session.env().worker_node_manager_ref());
-        let query = plan_fragmenter.split(plan)?;
-        info!("Generated query after plan fragmenter: {:?}", &query);
+        let query = plan_fragmenter.split(plan.clone())?;
+        info!("Generated query after plan fragmenter: {:?}，{:?}", &query,plan.explain_to_string()?);
         (query, pg_descs)
     };
 

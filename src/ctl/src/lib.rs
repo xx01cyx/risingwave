@@ -78,6 +78,7 @@ enum TableCommands {
     Scan {
         /// name of the materialized view to operate on
         mv_name: String,
+        epoch: u64,
     },
 }
 
@@ -102,8 +103,8 @@ pub async fn start(opts: CliOpts) -> Result<()> {
             ))
             .await??
         }
-        Commands::Table(TableCommands::Scan { mv_name }) => {
-            tokio::spawn(cmd_impl::table::scan(mv_name)).await??
+        Commands::Table(TableCommands::Scan { mv_name,epoch }) => {
+            tokio::spawn(cmd_impl::table::scan(mv_name,epoch)).await??
         }
         Commands::Bench(cmd) => tokio::spawn(cmd_impl::bench::do_bench(cmd)).await??,
     }

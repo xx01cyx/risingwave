@@ -86,7 +86,7 @@ pub async fn handle_create_mv(
         let (plan, table) = gen_create_mv_plan(
             &session,
             context.into(),
-            query,
+            query.clone(),
             name,
             handle_with_properties("create_mv", with_options.0)?,
         )?;
@@ -97,9 +97,10 @@ pub async fn handle_create_mv(
     };
 
     let catalog_writer = session.env().catalog_writer();
-    catalog_writer
+    let epoch = catalog_writer
         .create_materialized_view(table, graph)
         .await?;
+    tracing::info!("create_mv_over {:?},epoch {:?}",query,epoch);
 
     Ok(PgResponse::empty_result(
         StatementType::CREATE_MATERIALIZED_VIEW,

@@ -74,6 +74,7 @@ message CreateMaterializedViewResponse {
   common.Status status = 1;
   uint32 table_id = 2;
   uint64 version = 3;
+  uint64 epoch = 4;
 }
 
 message DropMaterializedViewRequest {

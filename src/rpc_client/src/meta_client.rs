@@ -136,14 +136,14 @@ impl MetaClient {
         &self,
         table: ProstTable,
         graph: StreamFragmentGraph,
-    ) -> Result<(TableId, CatalogVersion)> {
+    ) -> Result<(TableId, CatalogVersion,u64)> {
         let request = CreateMaterializedViewRequest {
             materialized_view: Some(table),
             fragment_graph: Some(graph),
         };
         let resp = self.inner.create_materialized_view(request).await?;
         // TODO: handle error in `resp.status` here
-        Ok((resp.table_id.into(), resp.version))
+        Ok((resp.table_id.into(), resp.version,resp.epoch))
     }
 
     pub async fn drop_materialized_view(&self, table_id: TableId) -> Result<CatalogVersion> {

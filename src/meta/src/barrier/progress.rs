@@ -103,7 +103,7 @@ impl CreateMviewProgressTracker {
         let actors = actors.into_iter().collect_vec();
         if actors.is_empty() {
             // The command can be finished immediately.
-            notifiers.into_iter().for_each(Notifier::notify_finished);
+            notifiers.into_iter().for_each(|notifier|notifier.notify_finished(ddl_epoch.0));
             return;
         }
 
@@ -119,7 +119,7 @@ impl CreateMviewProgressTracker {
 
     /// Update the progress of `actor` according to the Prost struct. If all actors in this MV have
     /// finished, `notify_finished` will be called on registered notifiers.
-    pub fn update(&mut self, progress: CreateMviewProgress) {
+    pub fn update(&mut self, progress: CreateMviewProgress, epoch1: u64) {
         let actor = progress.chain_actor_id;
         let Some(epoch) = self.actor_map.get(&actor).copied() else {
             panic!("no tracked progress for actor {}, is it already finished?", actor);
@@ -145,7 +145,7 @@ impl CreateMviewProgressTracker {
                     }
                     // Notify about finishing.
                     let notifiers = o.remove().1;
-                    notifiers.into_iter().for_each(Notifier::notify_finished);
+                    notifiers.into_iter().for_each(|notifier|notifier.notify_finished(epoch1));
                 }
             }
             Entry::Vacant(_) => unreachable!(),

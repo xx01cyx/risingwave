@@ -280,7 +280,7 @@ where
             table_properties,
             ..
         }: CreateMaterializedViewContext,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let nodes = self
             .cluster_manager
             .list_worker_node(
@@ -565,7 +565,7 @@ where
             .pre_allocate_splits(&table_id, source_fragments.clone())
             .await?;
 
-        if let Err(err) = self
+        match self
             .barrier_manager
             .run_command(Command::CreateMaterializedView {
                 table_fragments,
@@ -573,19 +573,39 @@ where
                 dispatches,
                 source_state: init_split_assignment.clone(),
             })
-            .await
-        {
-            self.fragment_manager
+            .await {
+            Err(err) => {self.fragment_manager
                 .cancel_create_table_fragments(&table_id)
                 .await?;
-            return Err(err);
-        } else {
-            self.source_manager
+                return Err(err)},
+            Ok(epoch)=>{
+                tracing::info!(epoch);
+                self.source_manager
                 .patch_update(Some(source_fragments), Some(init_split_assignment))
                 .await?;
+                Ok(epoch)
+            }
         }
+        // if let Err(err) = self
+        //     .barrier_manager
+        //     .run_command(Command::CreateMaterializedView {
+        //         table_fragments,
+        //         table_sink_map,
+        //         dispatches,
+        //         source_state: init_split_assignment.clone(),
+        //     })
+        //     .await
+        // {
+        //     self.fragment_manager
+        //         .cancel_create_table_fragments(&table_id)
+        //         .await?;
+        //     return Err(err);
+        // } else {
+        //     self.source_manager
+        //         .patch_update(Some(source_fragments), Some(init_split_assignment))
+        //         .await?;
+        // }
 
-        Ok(())
     }
 
     /// Dropping materialized view is done by barrier manager. Check

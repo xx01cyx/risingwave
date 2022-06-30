@@ -288,12 +288,12 @@ where
 
     /// Pause inject barrier until True
     fn can_inject_barrier(&self, in_flight_barrier_nums: usize) -> bool {
-        !self
+        self
             .command_ctx_queue
             .iter()
             .filter(|x| matches!(x.state, InFlight))
             .count()
-            >= in_flight_barrier_nums
+            < in_flight_barrier_nums
     }
 }
 
@@ -373,7 +373,7 @@ where
                 self.recovery(state.in_flight_prev_epoch).await;
             tracker.add(new_epoch, actors_to_track, vec![]);
             for progress in create_mview_progress {
-                tracker.update(progress);
+                tracker.update(progress,0);
             }
             state.in_flight_prev_epoch = new_epoch;
             state
@@ -528,6 +528,7 @@ where
                         actor_ids_to_send,
                         actor_ids_to_collect,
                     };
+                   // tracing::info!("request {:?}",request);
                     tracing::trace!(
                         target: "events::meta::barrier::inject_barrier",
                         "inject barrier request: {:?}", request
@@ -627,7 +628,7 @@ where
                 *tracker = CreateMviewProgressTracker::default();
                 tracker.add(new_epoch, actors_to_track, vec![]);
                 for progress in create_mview_progress {
-                    tracker.update(progress);
+                    tracker.update(progress,0);
                 }
                 state.in_flight_prev_epoch = new_epoch;
                 state
@@ -687,7 +688,7 @@ where
         let actors_to_finish = node.command_ctx.actors_to_track();
         tracker.add(node.command_ctx.curr_epoch, actors_to_finish, notifiers);
         for progress in responses.into_iter().flat_map(|r| r.create_mview_progress) {
-            tracker.update(progress);
+            tracker.update(progress,node.command_ctx.prev_epoch.0);
         }
         Ok(())
     }
@@ -734,7 +735,7 @@ where
     }
 
     /// Run a command and return when it's completely finished.
-    pub async fn run_command(&self, command: Command) -> Result<()> {
+    pub async fn run_command(&self, command: Command) -> Result<u64> {
         let (collect_tx, collect_rx) = oneshot::channel();
         let (finish_tx, finish_rx) = oneshot::channel();
 
@@ -753,6 +754,7 @@ where
         collect_rx.await.unwrap()?; // Throw the error if it occurs when collecting this barrier.
 
         // TODO: refactor this
+        let mut epoch ;
         if is_create_mv {
             // The snapshot ingestion may last for several epochs, we should pin the epoch here.
             // TODO: this should be done in `post_collect`
@@ -760,15 +762,15 @@ where
                 .hummock_manager
                 .pin_snapshot(META_NODE_ID, HummockEpoch::MAX)
                 .await?;
-            finish_rx.await.unwrap(); // Wait for this command to be finished.
+            epoch = finish_rx.await.unwrap(); // Wait for this command to be finished.
             self.hummock_manager
                 .unpin_snapshot(META_NODE_ID, [snapshot])
                 .await?;
         } else {
-            finish_rx.await.unwrap(); // Wait for this command to be finished.
+            epoch = finish_rx.await.unwrap(); // Wait for this command to be finished.
         }
 
-        Ok(())
+        Ok(epoch)
     }
 
     /// Wait for the next barrier to collect. Note that the barrier flowing in our stream graph is

@@ -177,6 +177,7 @@ impl UserIterator {
                             Excluded(end_key) => self.out_of_range = key >= end_key.as_slice(),
                             Unbounded => {}
                         };
+                        println!("epoch:{:?}",epoch);
                         return Ok(());
                     }
                     // It means that the key is deleted from the storage.
